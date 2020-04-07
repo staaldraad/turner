@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"crypto/tls"
 	"encoding/binary"
 	"flag"
@@ -9,6 +10,8 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strings"
+	"time"
 
 	"gortc.io/stun"
 	"gortc.io/turn"
@@ -25,25 +28,37 @@ var (
 	password = flag.String("p", "secret", "password")
 )
 
-func handleHTTP(w http.ResponseWriter, r *http.Request) {
-	w.Write([]byte("This is a HTTP Proxy, use it as such"))
-}
-
-func transfer(destination io.WriteCloser, source io.ReadCloser) {
-	defer destination.Close()
-	defer source.Close()
-	io.Copy(destination, source)
-}
-
-func handleProxyTun(w http.ResponseWriter, r *http.Request) {
-	target := ""
-
-	// if GET http://address parse out the address
-	if r.Method == http.MethodGet {
-		fmt.Println(r.URL.Host)
-		target = r.URL.Host
+func copyHeader(dst, src http.Header) {
+	for k, vv := range src {
+		for _, v := range vv {
+			dst.Add(k, v)
+		}
 	}
-	target = r.URL.Host
+}
+
+func bufHeader(src http.Header) []byte {
+	buf := make([]byte, 0)
+	for k, vv := range src {
+		buf = append(buf, []byte(k)...)
+		buf = append(buf, []byte(":")...)
+		for _, v := range vv {
+			buf = append(buf, []byte(v)...)
+		}
+		buf = append(buf, []byte("\r\n")...)
+	}
+	return buf
+}
+
+// this function is such an ugly hack but I'm tired and it works
+// look at replacing with real code that does io.Copy and
+// better buffer handling
+// this drains http headers, constructs manual method line
+// and manual host line
+// then sends everything to the server
+func handleHTTP(w http.ResponseWriter, r *http.Request) {
+	fmt.Println(r.Method)
+
+	target := r.URL.Host
 	if target == "" {
 		w.Write([]byte("This is a HTTP Proxy, use it as such"))
 		return
@@ -54,8 +69,77 @@ func handleProxyTun(w http.ResponseWriter, r *http.Request) {
 	if port == "" {
 		port = "80"
 	}
-	//peer := fmt.Sprintf("%s:%s", target, port)
 	peer := target
+	if strings.Index(target, ":") == -1 {
+		peer = fmt.Sprintf("%s:%s", target, port)
+	}
+	fmt.Println(peer)
+
+	dest_conn, err := connectTurn(peer)
+	if err != nil {
+
+	}
+
+	// create method line
+	methodLine := fmt.Sprintf("%s %s %s\r\n", r.Method, r.URL.Path, r.Proto)
+	hostLine := fmt.Sprintf("Host: %s\r\n", target)
+	dest_conn.Write([]byte(methodLine))
+	dest_conn.Write([]byte(hostLine))
+	dest_conn.Write(bufHeader(r.Header))
+	dest_conn.Write([]byte("\r\n"))
+	//drain body
+
+	io.Copy(dest_conn, r.Body)
+
+	defer dest_conn.Close()
+
+	dest_conn.SetReadBuffer(2048)
+
+	timeoutDuration := 5 * time.Second
+	bufReader := bufio.NewReader(dest_conn)
+
+	for {
+		// Set a deadline for reading. Read operation will fail if no data
+		// is received after deadline.
+		dest_conn.SetReadDeadline(time.Now().Add(timeoutDuration))
+
+		// Read tokens delimited by newline
+		bytes, err := bufReader.ReadBytes('\n')
+		if err != nil {
+			fmt.Println(err)
+			break
+		}
+
+		fmt.Printf("%s", bytes)
+		w.Write(bytes)
+	}
+}
+
+func transfer(destination io.WriteCloser, source io.ReadCloser) {
+	defer destination.Close()
+	defer source.Close()
+	io.Copy(destination, source)
+}
+
+func handleProxyTun(w http.ResponseWriter, r *http.Request) {
+	fmt.Println("CONNECT")
+
+	target := r.URL.Host
+	if target == "" {
+		w.Write([]byte("This is a HTTP Proxy, use it as such"))
+		return
+	}
+
+	port := r.URL.Port()
+
+	if port == "" {
+		port = "80"
+	}
+	peer := target
+	if strings.Index(target, ":") == -1 {
+		peer = fmt.Sprintf("%s:%s", target, port)
+	}
+
 	w.WriteHeader(http.StatusOK)
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
@@ -67,6 +151,16 @@ func handleProxyTun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 	}
 
+	dest_conn, err := connectTurn(peer)
+	if err != nil {
+
+	}
+	go transfer(dest_conn, client_conn)
+	go transfer(client_conn, dest_conn)
+
+}
+
+func connectTurn(target string) (*net.TCPConn, error) {
 	// Resolving to TURN server.
 	raddr, err := net.ResolveTCPAddr("tcp", *server)
 	if err != nil {
@@ -89,7 +183,7 @@ func handleProxyTun(w http.ResponseWriter, r *http.Request) {
 	if allocErr != nil {
 		panic(allocErr)
 	}
-	peerAddr, resolveErr := net.ResolveTCPAddr("tcp", peer)
+	peerAddr, resolveErr := net.ResolveTCPAddr("tcp", target)
 	if resolveErr != nil {
 		panic(resolveErr)
 	}
@@ -107,7 +201,8 @@ func handleProxyTun(w http.ResponseWriter, r *http.Request) {
 	fmt.Println("send connect request")
 	var connid stun.RawAttribute
 	if connid, err = conn.Connect(); err != nil {
-		panic(err)
+		fmt.Println(err)
+		return nil, err
 	}
 
 	// setup bind
@@ -129,13 +224,7 @@ func handleProxyTun(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		panic(err)
 	}
-
-	//dst_r := bufio.NewReader(cb)
-	//dst_w := bufio.NewWriter(cb)
-	fmt.Fprint(cb, []byte("baaaa"))
-	fmt.Fprint(client_conn, cb.CloseRead().Error())
-	//fmt.Println(client_conn)
-
+	return cb, err
 }
 
 func main() {
@@ -144,8 +233,7 @@ func main() {
 	server := &http.Server{
 		Addr: ":8080",
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Method == http.MethodConnect || r.Method == http.MethodGet {
-				//handleTunneling(w, r)
+			if r.Method == http.MethodConnect {
 				handleProxyTun(w, r)
 			} else {
 				handleHTTP(w, r)
