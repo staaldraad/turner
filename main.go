@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"crypto/tls"
 	"encoding/binary"
 	"flag"
@@ -132,22 +131,30 @@ func handleHTTP(w http.ResponseWriter, r *http.Request) {
 	dest_conn.SetReadBuffer(2048)
 
 	timeoutDuration := 5 * time.Second
-	bufReader := bufio.NewReader(dest_conn)
-
+	//bufReader := bufio.NewReader(dest_conn)
+	buf := make([]byte, 2048)
 	for {
 		// Set a deadline for reading. Read operation will fail if no data
 		// is received after deadline.
 		dest_conn.SetReadDeadline(time.Now().Add(timeoutDuration))
 
-		// Read tokens delimited by newline
-		bytes, err := bufReader.ReadBytes('\n')
+		n, err := dest_conn.Read(buf)
 		if err != nil {
-			fmt.Println(err)
+			if err == io.EOF {
+				continue
+			}
 			break
 		}
-
+		/*
+			// Read tokens delimited by newline
+			bytes, err := dest_conn.Read()
+			if err != nil {
+				fmt.Println(err)
+				break
+			}
+		*/
 		//fmt.Printf("%s", bytes)
-		bufwr.Write(bytes)
+		bufwr.Write(buf[:n])
 		bufwr.Flush()
 	}
 
