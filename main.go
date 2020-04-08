@@ -75,11 +75,34 @@ func handleHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	fmt.Println(peer)
 
-	dest_conn, err := connectTurn(peer)
+	control_conn, dest_conn, err := connectTurn(peer)
 	if err != nil {
+		if control_conn != nil {
+			control_conn.Close()
+		}
+		if dest_conn != nil {
+			dest_conn.Close()
+		}
 
+		http.Error(w, "Proxy encountered error", http.StatusInternalServerError)
+		return
 	}
+	defer control_conn.Close()
 
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		http.Error(w, "webserver doesn't support hijacking", http.StatusInternalServerError)
+		return
+	}
+	conn, bufwr, err := hj.Hijack()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// Don't forget to close the connection:
+	defer conn.Close()
+
+	//ugly hack to recreate same function that could be achieved with httputil.DumpRequest
 	// create method line
 	methodLine := fmt.Sprintf("%s %s %s\r\n", r.Method, r.URL.Path, r.Proto)
 	hostLine := fmt.Sprintf("Host: %s\r\n", target)
@@ -91,6 +114,19 @@ func handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 	io.Copy(dest_conn, r.Body)
 
+	/*
+		// Would have loved to just use DumpRequest here
+		// but this drops the Host header as go follows rfc7230
+		// https://github.com/golang/go/issues/16265
+		// which ends up giving problems as receiving servers return 400 "missing host header"
+		dump, err := httputil.DumpRequest(r, true)
+		if err != nil {
+			http.Error(w, fmt.Sprint(err), http.StatusInternalServerError)
+			return
+		}
+		dest_conn.Write(dump)
+		fmt.Printf("%q\n", dump)
+	*/
 	defer dest_conn.Close()
 
 	dest_conn.SetReadBuffer(2048)
@@ -110,9 +146,11 @@ func handleHTTP(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 
-		fmt.Printf("%s", bytes)
-		w.Write(bytes)
+		//fmt.Printf("%s", bytes)
+		bufwr.Write(bytes)
+		bufwr.Flush()
 	}
+
 }
 
 func transfer(destination io.WriteCloser, source io.ReadCloser) {
@@ -151,24 +189,34 @@ func handleProxyTun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 	}
 
-	dest_conn, err := connectTurn(peer)
+	control_conn, dest_conn, err := connectTurn(peer)
 	if err != nil {
-
+		if control_conn != nil {
+			control_conn.Close()
+		}
+		if dest_conn != nil {
+			dest_conn.Close()
+		}
+		client_conn.Write([]byte("Proxy encountered error"))
 	}
 	go transfer(dest_conn, client_conn)
-	go transfer(client_conn, dest_conn)
+	transfer(client_conn, dest_conn)
 
+	defer control_conn.Close()
+	defer dest_conn.Close()
 }
 
-func connectTurn(target string) (*net.TCPConn, error) {
+func connectTurn(target string) (*net.TCPConn, *net.TCPConn, error) {
 	// Resolving to TURN server.
 	raddr, err := net.ResolveTCPAddr("tcp", *server)
 	if err != nil {
-		panic(err)
+		fmt.Println(err)
+		return nil, nil, err
 	}
 	c, err := net.DialTCP("tcp", nil, raddr)
 	if err != nil {
-		panic(err)
+		fmt.Println(err)
+		return nil, nil, err
 	}
 	fmt.Printf("dial server %s -> %s\n", c.LocalAddr(), c.RemoteAddr())
 	client, clientErr := turnc.New(turnc.Options{
@@ -177,39 +225,45 @@ func connectTurn(target string) (*net.TCPConn, error) {
 		Password: *password,
 	})
 	if clientErr != nil {
-		panic(clientErr)
+		fmt.Println(clientErr)
+		return c, nil, err
 	}
 	a, allocErr := client.AllocateTCP()
 	if allocErr != nil {
-		panic(allocErr)
+		fmt.Println(allocErr)
+		return c, nil, err
 	}
 	peerAddr, resolveErr := net.ResolveTCPAddr("tcp", target)
 	if resolveErr != nil {
-		panic(resolveErr)
+		fmt.Println(resolveErr)
+		return c, nil, err
 	}
 	fmt.Println("create peer")
 	permission, createErr := a.Create(peerAddr.IP)
 	if createErr != nil {
-		panic(createErr)
+		fmt.Println(createErr)
+		return c, nil, err
 	}
 	fmt.Println("create peer")
 	conn, err := permission.CreateTCP(peerAddr)
 	if err != nil {
-		panic(err)
+		fmt.Println(err)
+		return c, nil, err
 	}
 
 	fmt.Println("send connect request")
 	var connid stun.RawAttribute
 	if connid, err = conn.Connect(); err != nil {
 		fmt.Println(err)
-		return nil, err
+		return c, nil, err
 	}
 
 	// setup bind
 	fmt.Println("setting up bind")
 	cb, err := net.DialTCP("tcp", nil, raddr)
 	if err != nil {
-		panic(err)
+		fmt.Println(err)
+		return c, nil, err
 	}
 	clientb, clientErr := turnc.New(turnc.Options{
 		Conn:     cb,
@@ -217,14 +271,16 @@ func connectTurn(target string) (*net.TCPConn, error) {
 		Password: *password,
 	})
 	if clientErr != nil {
-		panic(clientErr)
+		fmt.Println(clientErr)
+		return c, cb, err
 	}
 
 	err = clientb.ConnectionBind(turn.ConnectionID(binary.BigEndian.Uint32(connid.Value)))
 	if err != nil {
-		panic(err)
+		fmt.Println(err)
+		return c, cb, err
 	}
-	return cb, err
+	return c, cb, nil
 }
 
 func main() {
