@@ -6,6 +6,6 @@ require (
 	gortc.io/turnc v0.2.0
 )
 
-replace gortc.io/turn => ../turn
+replace gortc.io/turn => github.com/staaldraad/turn v0.11.3
 
-replace gortc.io/turnc => ../turnc
+replace gortc.io/turnc => github.com/staaldraad/turnc v0.2.2
