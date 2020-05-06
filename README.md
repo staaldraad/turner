@@ -9,7 +9,7 @@ More info: [https://www.rtcsec.com/2020/04/01-slack-webrtc-turn-compromise/](htt
 If using *GO Modules*:
 
 ```
-git clone github.com/staaldraad/turner
+git clone https://github.com/staaldraad/turner
 cd turner
 go build
 ```
