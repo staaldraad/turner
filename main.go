@@ -88,15 +88,6 @@ func handleHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fmt.Println("Next bit")
-
-	// make sure connections get closed
-	closeFunc := func() {
-		fmt.Println("[*] Connections closed")
-		_ = controlConn.Close()
-		_ = destConn.Close()
-	}
-
 	hj, ok := w.(http.Hijacker)
 	if !ok {
 		http.Error(w, "webserver doesn't support hijacking", http.StatusInternalServerError)
@@ -108,7 +99,15 @@ func handleHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Don't forget to close the connection:
-	defer conn.Close()
+	//defer conn.Close()
+
+	// make sure connections get closed
+	closeFunc := func() {
+		fmt.Println("[*] Connections closed")
+		_ = controlConn.Close()
+		_ = destConn.Close()
+		_ = conn.Close()
+	}
 
 	//ugly hack to recreate same function that could be achieved with httputil.DumpRequest
 	// create method line
@@ -136,12 +135,12 @@ func handleHTTP(w http.ResponseWriter, r *http.Request) {
 		fmt.Printf("%q\n", dump)
 	*/
 
-	destConn.SetReadBuffer(2048)
+	//destConn.SetReadBuffer(512)
 
 	timeoutDuration := 5 * time.Second
 	//bufReader := bufio.NewReader(destConn)
 	//buf := make([]byte, 2048)
-	fmt.Println("xx")
+
 	for {
 		// Set a deadline for reading. Read operation will fail if no data
 		// is received after deadline.
@@ -252,6 +251,7 @@ func connectTurn(target string) (*net.TCPConn, *net.TCPConn, error) {
 		fmt.Println(clientErr)
 		return c, nil, err
 	}
+	//client.StartRead()
 	a, allocErr := client.AllocateTCP()
 	if allocErr != nil {
 		fmt.Println(allocErr)
@@ -307,6 +307,8 @@ func connectTurn(target string) (*net.TCPConn, *net.TCPConn, error) {
 		fmt.Println("[x] Couldn't bind", err)
 		return c, cb, err
 	}
+	//clientb.StartRead()
+	fmt.Println("[*] Bound")
 	return c, cb, nil
 }
 
