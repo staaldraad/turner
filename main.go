@@ -72,7 +72,7 @@ func handleHTTP(w http.ResponseWriter, r *http.Request) {
 	if strings.Index(target, ":") == -1 {
 		peer = fmt.Sprintf("%s:%s", target, port)
 	}
-	fmt.Println(peer)
+	fmt.Printf("[*] Proxy to peer: %s\n", peer)
 
 	var closer sync.Once
 
@@ -84,10 +84,11 @@ func handleHTTP(w http.ResponseWriter, r *http.Request) {
 		if destConn != nil {
 			destConn.Close()
 		}
-
 		http.Error(w, "Proxy encountered error", http.StatusInternalServerError)
 		return
 	}
+
+	fmt.Println("Next bit")
 
 	// make sure connections get closed
 	closeFunc := func() {
@@ -140,6 +141,7 @@ func handleHTTP(w http.ResponseWriter, r *http.Request) {
 	timeoutDuration := 5 * time.Second
 	//bufReader := bufio.NewReader(destConn)
 	//buf := make([]byte, 2048)
+	fmt.Println("xx")
 	for {
 		// Set a deadline for reading. Read operation will fail if no data
 		// is received after deadline.
@@ -240,7 +242,7 @@ func connectTurn(target string) (*net.TCPConn, *net.TCPConn, error) {
 		fmt.Println(err)
 		return nil, nil, err
 	}
-	fmt.Printf("dial server %s -> %s\n", c.LocalAddr(), c.RemoteAddr())
+	fmt.Printf("[*] Dial server %s -> %s\n", c.LocalAddr(), c.RemoteAddr())
 	client, clientErr := turnc.New(turnc.Options{
 		Conn:     c,
 		Username: *username,
@@ -260,20 +262,20 @@ func connectTurn(target string) (*net.TCPConn, *net.TCPConn, error) {
 		fmt.Println(resolveErr)
 		return c, nil, err
 	}
-	fmt.Println("create peer")
+	fmt.Println("[*] Create peer permission")
 	permission, createErr := a.Create(peerAddr.IP)
 	if createErr != nil {
 		fmt.Println(createErr)
 		return c, nil, err
 	}
-	fmt.Println("create peer")
+	fmt.Println("[*] Create TCP Session Connection")
 	conn, err := permission.CreateTCP(peerAddr)
 	if err != nil {
 		fmt.Println(err)
 		return c, nil, err
 	}
 
-	fmt.Println("send connect request")
+	fmt.Println("[*] Create connect request")
 	var connid stun.RawAttribute
 	if connid, err = conn.Connect(); err != nil {
 		fmt.Println(err)
@@ -281,12 +283,14 @@ func connectTurn(target string) (*net.TCPConn, *net.TCPConn, error) {
 	}
 
 	// setup bind
-	fmt.Println("setting up bind")
+	fmt.Println("[*] Create bind TCP connection")
 	cb, err := net.DialTCP("tcp", nil, raddr)
 	if err != nil {
 		fmt.Println(err)
 		return c, nil, err
 	}
+
+	fmt.Println("[*] Auth and Create client ")
 	clientb, clientErr := turnc.New(turnc.Options{
 		Conn:     cb,
 		Username: *username,
@@ -297,9 +301,10 @@ func connectTurn(target string) (*net.TCPConn, *net.TCPConn, error) {
 		return c, cb, err
 	}
 
-	err = clientb.ConnectionBind(turn.ConnectionID(binary.BigEndian.Uint32(connid.Value)))
+	fmt.Println("[*] Bind client ")
+	err = clientb.ConnectionBind(turn.ConnectionID(binary.BigEndian.Uint32(connid.Value)), a)
 	if err != nil {
-		fmt.Println(err)
+		fmt.Println("[x] Couldn't bind", err)
 		return c, cb, err
 	}
 	return c, cb, nil
