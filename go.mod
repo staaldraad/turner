@@ -1,5 +1,7 @@
 module github.com/staaldraad/turner
 
+go 1.15
+
 require (
 	gortc.io/stun v1.22.1
 	gortc.io/turn v0.11.2
