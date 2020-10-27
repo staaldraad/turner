@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"gortc.io/stun"
@@ -19,7 +20,7 @@ import (
 
 var (
 	server = flag.String("server",
-		fmt.Sprintf("localhost:3478"),
+		"localhost:3478",
 		"turn server address",
 	)
 
@@ -55,7 +56,6 @@ func bufHeader(src http.Header) []byte {
 // and manual host line
 // then sends everything to the server
 func handleHTTP(w http.ResponseWriter, r *http.Request) {
-	fmt.Println(r.Method)
 
 	target := r.URL.Host
 	if target == "" {
@@ -72,21 +72,30 @@ func handleHTTP(w http.ResponseWriter, r *http.Request) {
 	if strings.Index(target, ":") == -1 {
 		peer = fmt.Sprintf("%s:%s", target, port)
 	}
-	fmt.Println(peer)
+	fmt.Printf("[*] Proxy to peer: %s\n", peer)
 
-	control_conn, dest_conn, err := connectTurn(peer)
+	var closer sync.Once
+
+	controlConn, destConn, err := connectTurn(peer)
 	if err != nil {
-		if control_conn != nil {
-			control_conn.Close()
+		if controlConn != nil {
+			controlConn.Close()
 		}
-		if dest_conn != nil {
-			dest_conn.Close()
+		if destConn != nil {
+			destConn.Close()
 		}
-
 		http.Error(w, "Proxy encountered error", http.StatusInternalServerError)
 		return
 	}
-	defer control_conn.Close()
+
+	fmt.Println("Next bit")
+
+	// make sure connections get closed
+	closeFunc := func() {
+		fmt.Println("[*] Connections closed")
+		_ = controlConn.Close()
+		_ = destConn.Close()
+	}
 
 	hj, ok := w.(http.Hijacker)
 	if !ok {
@@ -105,13 +114,13 @@ func handleHTTP(w http.ResponseWriter, r *http.Request) {
 	// create method line
 	methodLine := fmt.Sprintf("%s %s %s\r\n", r.Method, r.URL.Path, r.Proto)
 	hostLine := fmt.Sprintf("Host: %s\r\n", target)
-	dest_conn.Write([]byte(methodLine))
-	dest_conn.Write([]byte(hostLine))
-	dest_conn.Write(bufHeader(r.Header))
-	dest_conn.Write([]byte("\r\n"))
+	destConn.Write([]byte(methodLine))
+	destConn.Write([]byte(hostLine))
+	destConn.Write(bufHeader(r.Header))
+	destConn.Write([]byte("\r\n"))
 	//drain body
 
-	io.Copy(dest_conn, r.Body)
+	io.Copy(destConn, r.Body)
 
 	/*
 		// Would have loved to just use DumpRequest here
@@ -123,22 +132,22 @@ func handleHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, fmt.Sprint(err), http.StatusInternalServerError)
 			return
 		}
-		dest_conn.Write(dump)
+		destConn.Write(dump)
 		fmt.Printf("%q\n", dump)
 	*/
-	defer dest_conn.Close()
 
-	dest_conn.SetReadBuffer(2048)
+	destConn.SetReadBuffer(2048)
 
 	timeoutDuration := 5 * time.Second
-	//bufReader := bufio.NewReader(dest_conn)
-	buf := make([]byte, 2048)
+	//bufReader := bufio.NewReader(destConn)
+	//buf := make([]byte, 2048)
+	fmt.Println("xx")
 	for {
 		// Set a deadline for reading. Read operation will fail if no data
 		// is received after deadline.
-		dest_conn.SetReadDeadline(time.Now().Add(timeoutDuration))
+		destConn.SetReadDeadline(time.Now().Add(timeoutDuration))
 
-		n, err := dest_conn.Read(buf)
+		_, err := io.Copy(bufwr, destConn)
 		if err != nil {
 			if err == io.EOF {
 				continue
@@ -147,23 +156,29 @@ func handleHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		/*
 			// Read tokens delimited by newline
-			bytes, err := dest_conn.Read()
+			bytes, err := destConn.Read()
 			if err != nil {
 				fmt.Println(err)
 				break
 			}
 		*/
 		//fmt.Printf("%s", bytes)
-		bufwr.Write(buf[:n])
-		bufwr.Flush()
+		//bufwr.Write(buf[:n])
+		//bufwr.Flush()
 	}
+	// close the connections
+	closer.Do(closeFunc)
 
 }
 
-func transfer(destination io.WriteCloser, source io.ReadCloser) {
-	defer destination.Close()
-	defer source.Close()
+func transfer(destination io.WriteCloser, source io.ReadCloser, closer *sync.Once) {
+	closeFunc := func() {
+		fmt.Println("[*] Connections closed.")
+		_ = destination.Close()
+		_ = source.Close()
+	}
 	io.Copy(destination, source)
+	closer.Do(closeFunc)
 }
 
 func handleProxyTun(w http.ResponseWriter, r *http.Request) {
@@ -191,26 +206,28 @@ func handleProxyTun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Hijacking not supported", http.StatusInternalServerError)
 		return
 	}
-	client_conn, _, err := hijacker.Hijack()
+	clientConn, _, err := hijacker.Hijack()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 	}
 
-	control_conn, dest_conn, err := connectTurn(peer)
+	controlConn, destConn, err := connectTurn(peer)
 	if err != nil {
-		if control_conn != nil {
-			control_conn.Close()
+		if controlConn != nil {
+			controlConn.Close()
 		}
-		if dest_conn != nil {
-			dest_conn.Close()
+		if destConn != nil {
+			destConn.Close()
 		}
-		client_conn.Write([]byte("Proxy encountered error"))
+		clientConn.Write([]byte("Proxy encountered error"))
 	}
-	go transfer(dest_conn, client_conn)
-	transfer(client_conn, dest_conn)
 
-	defer control_conn.Close()
-	defer dest_conn.Close()
+	// make sure connections get closed, use a sync.Once to ensure the close happens in one of the handlers
+	var closer sync.Once
+
+	go transfer(destConn, clientConn, &closer)
+	transfer(clientConn, destConn, &closer)
+
 }
 
 func connectTurn(target string) (*net.TCPConn, *net.TCPConn, error) {
@@ -225,7 +242,7 @@ func connectTurn(target string) (*net.TCPConn, *net.TCPConn, error) {
 		fmt.Println(err)
 		return nil, nil, err
 	}
-	fmt.Printf("dial server %s -> %s\n", c.LocalAddr(), c.RemoteAddr())
+	fmt.Printf("[*] Dial server %s -> %s\n", c.LocalAddr(), c.RemoteAddr())
 	client, clientErr := turnc.New(turnc.Options{
 		Conn:     c,
 		Username: *username,
@@ -245,20 +262,20 @@ func connectTurn(target string) (*net.TCPConn, *net.TCPConn, error) {
 		fmt.Println(resolveErr)
 		return c, nil, err
 	}
-	fmt.Println("create peer")
+	fmt.Println("[*] Create peer permission")
 	permission, createErr := a.Create(peerAddr.IP)
 	if createErr != nil {
 		fmt.Println(createErr)
 		return c, nil, err
 	}
-	fmt.Println("create peer")
+	fmt.Println("[*] Create TCP Session Connection")
 	conn, err := permission.CreateTCP(peerAddr)
 	if err != nil {
 		fmt.Println(err)
 		return c, nil, err
 	}
 
-	fmt.Println("send connect request")
+	fmt.Println("[*] Create connect request")
 	var connid stun.RawAttribute
 	if connid, err = conn.Connect(); err != nil {
 		fmt.Println(err)
@@ -266,12 +283,14 @@ func connectTurn(target string) (*net.TCPConn, *net.TCPConn, error) {
 	}
 
 	// setup bind
-	fmt.Println("setting up bind")
+	fmt.Println("[*] Create bind TCP connection")
 	cb, err := net.DialTCP("tcp", nil, raddr)
 	if err != nil {
 		fmt.Println(err)
 		return c, nil, err
 	}
+
+	fmt.Println("[*] Auth and Create client ")
 	clientb, clientErr := turnc.New(turnc.Options{
 		Conn:     cb,
 		Username: *username,
@@ -282,9 +301,10 @@ func connectTurn(target string) (*net.TCPConn, *net.TCPConn, error) {
 		return c, cb, err
 	}
 
-	err = clientb.ConnectionBind(turn.ConnectionID(binary.BigEndian.Uint32(connid.Value)))
+	fmt.Println("[*] Bind client ")
+	err = clientb.ConnectionBind(turn.ConnectionID(binary.BigEndian.Uint32(connid.Value)), a)
 	if err != nil {
-		fmt.Println(err)
+		fmt.Println("[x] Couldn't bind", err)
 		return c, cb, err
 	}
 	return c, cb, nil
