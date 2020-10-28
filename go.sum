@@ -7,6 +7,8 @@ github.com/staaldraad/turnc v0.2.4 h1:XEdB8BlwHWr6No1juexZeFm7Qxsz1FfCl9kg9JbNjS
 github.com/staaldraad/turnc v0.2.4/go.mod h1:OnT2WcZz7g2oZGmYAslnEgaJF4fNmexoEO7n6Cp84GI=
 github.com/staaldraad/turnc v0.2.5 h1:UWuiq7Yp3YuktdtBHhBcYPPl5Uu47ap6tZbfi6kK04M=
 github.com/staaldraad/turnc v0.2.5/go.mod h1:OnT2WcZz7g2oZGmYAslnEgaJF4fNmexoEO7n6Cp84GI=
+github.com/staaldraad/turnc v0.2.7 h1:+GiyYcJB6Nwsh8OJlJfZyAzNhmrnYuWYWmTBwO0b7xA=
+github.com/staaldraad/turnc v0.2.7/go.mod h1:OnT2WcZz7g2oZGmYAslnEgaJF4fNmexoEO7n6Cp84GI=
 github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
 github.com/stretchr/testify v1.4.0/go.mod h1:j7eGeouHqKxXV5pUuKE4zz7dFj8WfuZ+81PSLYec5m4=
 go.uber.org/atomic v1.4.0 h1:cxzIVoETapQEqDhQu3QfnvXAV4AlzcvUCxkVUFw3+EU=
