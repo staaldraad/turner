@@ -14,42 +14,6 @@ cd turner
 go build
 ```
 
-*Otherwise the traditional GOPATH route needs some extra work*
-
-Install the dependencies, this provides the libraries for TURN/STUN that this tool requires:
-
-```
-go get gortc.io/turnc # just getting this should be enough, but incase, the other two are below
-go get gortc.io/turn
-go get gortc.io/stun
-```
-
-Pull in the changes that enable TCP binding based on RFC6062
-
-```
-cd $GOPATH/src/gortc.io/turnc
-git remote add staaldraad https://github.com/staaldraad/turnc
-git pull staaldraad rfc6062
-git checkout rfc6062
-```
-
-And for the **turn** dependency the same thing;
-
-```
-cd $GOPATH/src/gortc.io/turn
-git remote add staaldraad https://github.com/staaldraad/turn
-git pull staaldraad rfc6062
-git checkout rfc6062
-```
-
-
-Finally go this repo:
-
-```
-go get github.com/staaldraad/turner
-cd $GOPATH/src/github.com/staaldraad/turner
-```
-
 ## Run
 
 _Disclaimer: Currently this is very much PoC, so things are a bit flaky, YMMV..._
@@ -63,10 +27,10 @@ This assumes you already have a TURN server to connect to or are running your ow
 You can also supply the username/password if the server requires these:
 
 ```
-./turner -server turn.server:3478 -u username -p password
+./turner -server turn.server:3478 -u username -p password -http
 ```
 
-The proxy listens on **0.0.0.0:8080** by default. 
+The proxy listens on **127.0.0.1:8080** by default. 
 
 Testing that the proxy works:
 
@@ -78,6 +42,15 @@ curl http://ifconf.co/ip
 curl -x http://localhost:8080 http://ifconf.co/ip 
 ```
 
+### SOCKS5
+
+There is basic SOCKS5 support built-in. The SOCKS5 server can be toggled on via the `-socks5` argument.
+
+```
+./turner -server turn.server:3478 -u username -p password -socks5
+```
+
+It is also possible to enable both SOCKS5 and HTTP proxy-ing at the same time. Simply supply both arguments `-http` and `-socks5`.
 
 # LICENSE
 
