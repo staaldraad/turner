@@ -1,17 +1,18 @@
 package main
 
 import (
+	"context"
 	"encoding/binary"
 	"flag"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/armon/go-socks5"
 	"gortc.io/stun"
 	"gortc.io/turn"
 	"gortc.io/turnc"
@@ -23,8 +24,14 @@ var (
 		"turn server address",
 	)
 
-	username = flag.String("u", "user", "username")
-	password = flag.String("p", "secret", "password")
+	username  = flag.String("u", "user", "username")
+	password  = flag.String("p", "secret", "password")
+	socksProx = flag.Bool("socks5", false, "Start a SOCKS5 server")
+	httpProx  = flag.Bool("http", false, "Start HTTP Proxy")
+	socksPort = flag.Int("sp", 8000, "Port to use for SOCKS server")
+	httpPort  = flag.Int("hp", 8080, "Port to use for HTTP Proxy")
+	socksHost = flag.String("sh", "127.0.0.1", "Host addr to listen on SOCKS5 (default 127.0.0.1)")
+	httpHost  = flag.String("hh", "127.0.0.1", "Host addr to listen on HTTP (default 127.0.0.1)")
 )
 
 func copyHeader(dst, src http.Header) {
@@ -300,35 +307,74 @@ func connectTurn(target string) (*net.TCPConn, *net.TCPConn, *turnc.Client, *tur
 	return c, cb, client, clientb, nil
 }
 
-func readControl(conn *turnc.Connection, connectionAttempt chan bool) {
-	buf := make([]byte, 512)
-	for {
-		n, err := conn.Read(buf)
-		if err != nil {
-			fmt.Println(err)
-			break
-		}
-		fmt.Printf("\n%x\n", buf[:n])
+func turnDial(ctx context.Context, network, addr string) (net.Conn, error) {
+	ctlCon, dataCon, ctlClient, dataClient, err := connectTurn(addr)
+	if err != nil {
+		return nil, err
 	}
-	conn.Close()
+
+	// quick hack function to close connections
+	go func() {
+		b := make([]byte, 0)
+		for {
+			if _, e := dataCon.Read(b); e != nil {
+				ctlCon.Close()
+				ctlClient.Close()
+				dataCon.Close()
+				dataClient.Close()
+				break
+			}
+		}
+	}()
+	return dataCon, nil
 }
 
 func main() {
 	flag.Parse()
 
-	server := &http.Server{
-		Addr: ":8080",
-		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Method == http.MethodConnect {
-				handleProxyTun(w, r)
-			} else {
-				handleHTTP(w, r)
+	if !*httpProx && !*socksProx {
+		fmt.Println("[x] No mode selected. Use either, or both, -http or -socks5")
+		return
+	}
+	errChan := make(chan error)
+
+	if *httpProx {
+		go func(errChan chan error) {
+			fmt.Printf("[*] Starting HTTP Server on %s:%d\n", *httpHost, *httpPort)
+			httpServer := &http.Server{
+				Addr: fmt.Sprintf("%s:%d", *httpHost, *httpPort),
+				Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.Method == http.MethodConnect {
+						handleProxyTun(w, r)
+					} else {
+						handleHTTP(w, r)
+					}
+				}),
+				// Disable HTTP/2.
+				//TLSNextProto: make(map[string]func(*http.Server, *tls.Conn, http.Handler)),
 			}
-		}),
-		// Disable HTTP/2.
-		//TLSNextProto: make(map[string]func(*http.Server, *tls.Conn, http.Handler)),
+			errChan <- httpServer.ListenAndServe()
+		}(errChan)
 	}
 
-	log.Fatal(server.ListenAndServe())
+	if *socksProx {
+		fmt.Printf("[*] Starting SOCKS5 Server on %s:%d\n", *socksHost, *socksPort)
+		go func(errChan chan error) {
+			conf := &socks5.Config{Dial: turnDial}
+			server, err := socks5.New(conf)
+			if err != nil {
+				errChan <- err
+				return
+			}
 
+			// Create SOCKS5 proxy on localhost port 8000
+			errChan <- server.ListenAndServe("tcp", fmt.Sprintf("%s:%d", *socksHost, *socksPort))
+		}(errChan)
+	}
+
+	select {
+	case <-errChan:
+		fmt.Println("Error setting up server.", errChan)
+
+	}
 }
