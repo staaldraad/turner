@@ -9,10 +9,9 @@ import (
 	"net"
 	"net/http"
 	"strings"
-	"sync"
-	"time"
 
 	"github.com/armon/go-socks5"
+	turner "github.com/staaldraad/turner/lib"
 	"gortc.io/stun"
 	"gortc.io/turn"
 	"gortc.io/turnc"
@@ -80,16 +79,8 @@ func handleHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	fmt.Printf("[*] Proxy to peer: %s\n", peer)
 
-	var closer sync.Once
-
-	controlConn, destConn, client, clientb, err := connectTurn(peer)
+	stunConnector, err := connectTurn(peer)
 	if err != nil {
-		if controlConn != nil {
-			controlConn.Close()
-		}
-		if destConn != nil {
-			destConn.Close()
-		}
 		http.Error(w, "Proxy encountered error", http.StatusInternalServerError)
 		return
 	}
@@ -104,74 +95,23 @@ func handleHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// Don't forget to close the connection:
-	//defer conn.Close()
-
-	// make sure connections get closed
-	closeFunc := func() {
-		fmt.Println("[*] Connections closed")
-		_ = controlConn.Close()
-		_ = destConn.Close()
-		_ = conn.Close()
-		_ = client.Close()
-		_ = clientb.Close()
-	}
 
 	//ugly hack to recreate same function that could be achieved with httputil.DumpRequest
 	// create method line
 	methodLine := fmt.Sprintf("%s %s %s\r\n", r.Method, r.URL.Path, r.Proto)
 	hostLine := fmt.Sprintf("Host: %s\r\n", target)
-	destConn.Write([]byte(methodLine))
-	destConn.Write([]byte(hostLine))
-	destConn.Write(bufHeader(r.Header))
-	destConn.Write([]byte("\r\n"))
+	stunConnector.Write([]byte(methodLine))
+	stunConnector.Write([]byte(hostLine))
+	stunConnector.Write(bufHeader(r.Header))
+	stunConnector.Write([]byte("\r\n"))
 	//drain body
 
-	io.Copy(destConn, r.Body)
+	io.Copy(stunConnector, r.Body)
+	io.Copy(bufwr, stunConnector)
 
-	/*
-		// Would have loved to just use DumpRequest here
-		// but this drops the Host header as go follows rfc7230
-		// https://github.com/golang/go/issues/16265
-		// which ends up giving problems as receiving servers return 400 "missing host header"
-		dump, err := httputil.DumpRequest(r, true)
-		if err != nil {
-			http.Error(w, fmt.Sprint(err), http.StatusInternalServerError)
-			return
-		}
-		destConn.Write(dump)
-		fmt.Printf("%q\n", dump)
-	*/
-
-	destConn.SetReadBuffer(512)
-
-	timeoutDuration := 5 * time.Second
-	// Set a deadline for reading. Read operation will fail if no data
-	// is received after deadline.
-	destConn.SetReadDeadline(time.Now().Add(timeoutDuration))
-
-	for {
-
-		_, err := io.Copy(bufwr, destConn)
-		if err != nil {
-			break
-		}
-	}
 	// close the connections
-	closer.Do(closeFunc)
-
-}
-
-func transfer(destination io.WriteCloser, source io.ReadCloser, c, cb *turnc.Client, closer *sync.Once) {
-	closeFunc := func() {
-		fmt.Println("[*] Connections closed.")
-		_ = destination.Close()
-		_ = source.Close()
-		_ = c.Close()
-		_ = cb.Close()
-	}
-	io.Copy(destination, source)
-	closer.Do(closeFunc)
+	defer conn.Close()
+	defer stunConnector.Close()
 }
 
 func handleProxyTun(w http.ResponseWriter, r *http.Request) {
@@ -187,9 +127,14 @@ func handleProxyTun(w http.ResponseWriter, r *http.Request) {
 	if port == "" {
 		port = "80"
 	}
-	peer := target
-	if strings.Index(target, ":") == -1 {
-		peer = fmt.Sprintf("%s:%s", target, port)
+	peer := r.Host
+
+	stunConnector, err := connectTurn(peer)
+	if err != nil {
+		//defer clientConn.Close()
+		w.WriteHeader(http.StatusInternalServerError)
+		//clientConn.Write([]byte("Proxy encountered error"))
+		return
 	}
 
 	w.WriteHeader(http.StatusOK)
@@ -203,39 +148,31 @@ func handleProxyTun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 	}
 
-	controlConn, destConn, client, clientb, err := connectTurn(peer)
-	if err != nil {
-		if controlConn != nil {
-			controlConn.Close()
-		}
-		if destConn != nil {
-			destConn.Close()
-		}
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-		//clientConn.Write([]byte("Proxy encountered error"))
-	}
+	go transfer(stunConnector, clientConn)
+	go transfer(clientConn, stunConnector)
 
-	// make sure connections get closed, use a sync.Once to ensure the close happens in one of the handlers
-	var closer sync.Once
-
-	go transfer(destConn, clientConn, client, clientb, &closer)
-	transfer(clientConn, destConn, client, clientb, &closer)
-
-	clientConn.Close()
 }
 
-func connectTurn(target string) (*net.TCPConn, *net.TCPConn, *turnc.Client, *turnc.Client, error) {
+func transfer(destination io.WriteCloser, source io.ReadCloser) {
+	defer destination.Close()
+	defer source.Close()
+	io.Copy(destination, source)
+}
+
+func connectTurn(target string) (*turner.StunConnection, error) {
+
+	stunConnector := &turner.StunConnection{}
+
 	// Resolving to TURN server.
 	raddr, err := net.ResolveTCPAddr("tcp", *server)
 	if err != nil {
 		fmt.Println(err)
-		return nil, nil, nil, nil, err
+		return nil, err
 	}
 	c, err := net.DialTCP("tcp", nil, raddr)
 	if err != nil {
 		fmt.Println(err)
-		return nil, nil, nil, nil, err
+		return nil, err
 	}
 	fmt.Printf("[*] Dial server %s -> %s\n", c.LocalAddr(), c.RemoteAddr())
 	client, clientErr := turnc.New(turnc.Options{
@@ -245,88 +182,96 @@ func connectTurn(target string) (*net.TCPConn, *net.TCPConn, *turnc.Client, *tur
 	})
 	if clientErr != nil {
 		fmt.Println(clientErr)
-		return c, nil, nil, nil, err
+		c.Close()
+		return nil, err
 	}
 	a, allocErr := client.AllocateTCP()
 	if allocErr != nil {
 		fmt.Println(allocErr)
-		return c, nil, nil, nil, err
+		client.Close()
+		return nil, err
 	}
 	peerAddr, resolveErr := net.ResolveTCPAddr("tcp", target)
 	if resolveErr != nil {
-		fmt.Println(resolveErr)
-		return c, nil, nil, nil, err
+		client.Close()
+		return nil, err
 	}
 	fmt.Println("[*] Create peer permission")
 	permission, createErr := a.Create(peerAddr.IP)
 	if createErr != nil {
-		fmt.Println(createErr)
-		return c, nil, nil, nil, err
+		client.Close()
+		return nil, err
 	}
 	fmt.Println("[*] Create TCP Session Connection")
 	conn, err := permission.CreateTCP(peerAddr)
 	if err != nil {
-		fmt.Println(err)
-		return c, nil, nil, nil, err
+		client.Close()
+		return nil, err
 	}
 
 	fmt.Println("[*] Create connect request")
 	var connid stun.RawAttribute
 	if connid, err = conn.Connect(); err != nil {
-		fmt.Println(err)
-		return c, nil, nil, nil, err
+		client.Close()
+		return nil, err
 	}
 
 	// setup bind
 	fmt.Println("[*] Create bind TCP connection")
 	cb, err := net.DialTCP("tcp", nil, raddr)
 	if err != nil {
-		fmt.Println(err)
-		return c, nil, nil, nil, err
-	}
-
-	fmt.Println("[*] Auth and Create client ")
-	clientb, clientErr := turnc.New(turnc.Options{
-		Conn: cb,
-	})
-	if clientErr != nil {
-		fmt.Println(clientErr)
-		return c, nil, client, clientb, err
-	}
-
-	time.Sleep(500 * time.Millisecond)
-
-	fmt.Println("[*] Bind client ")
-	_, err = clientb.ConnectionBind(turn.ConnectionID(binary.BigEndian.Uint32(connid.Value)), a)
-	if err != nil {
-		fmt.Println("[x] Couldn't bind", err)
-		return c, cb, client, clientb, err
-	}
-
-	fmt.Println("[*] Bound")
-	return c, cb, client, clientb, nil
-}
-
-func turnDial(ctx context.Context, network, addr string) (net.Conn, error) {
-	ctlCon, dataCon, ctlClient, dataClient, err := connectTurn(addr)
-	if err != nil {
+		client.Close()
 		return nil, err
 	}
 
-	// quick hack function to close connections
-	go func() {
-		b := make([]byte, 0)
-		for {
-			if _, e := dataCon.Read(b); e != nil {
-				ctlCon.Close()
-				ctlClient.Close()
-				dataCon.Close()
-				dataClient.Close()
-				break
-			}
-		}
-	}()
-	return dataCon, nil
+	fmt.Println("[*] Auth and Create client ")
+	sideChanReader, sideChanWriter := io.Pipe()
+	r := io.MultiReader(sideChanReader, cb)
+
+	clientb, clientErr := turnc.NewData(turnc.Options{
+		Conn: cb,
+	}, *sideChanWriter)
+
+	if clientErr != nil {
+		client.Close()
+		return nil, err
+	}
+
+	connD, err := permission.CreateTCP(peerAddr)
+	if err != nil {
+		client.Close()
+		return nil, err
+	}
+
+	fmt.Println("[*] Bind client ")
+
+	_, err = clientb.ConnectionBind(turn.ConnectionID(binary.BigEndian.Uint32(connid.Value)), a, connD)
+	if err != nil {
+		client.Close()
+		clientb.Close()
+		return nil, err
+	}
+	/*
+		buf := make([]byte, 10)
+		conn.Read(buf)
+		fmt.Println(buf)
+	*/
+	fmt.Println("[*] Bound")
+
+	stunConnector.CntrClient = *client
+	stunConnector.DataClient = *clientb
+	stunConnector.Conn = cb
+	stunConnector.MultiRead = r
+
+	return stunConnector, nil
+}
+
+func turnDial(ctx context.Context, network, addr string) (net.Conn, error) {
+	cnn, err := connectTurn(addr)
+	if err != nil {
+		return nil, err
+	}
+	return cnn, nil
 }
 
 func main() {
@@ -375,6 +320,5 @@ func main() {
 	select {
 	case <-errChan:
 		fmt.Println("Error setting up server.", errChan)
-
 	}
 }
