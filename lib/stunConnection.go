@@ -28,9 +28,11 @@ func (c *StunConnection) Write(b []byte) (n int, err error) {
 // Close stops all refreshing loops for permission and removes it from
 // allocation.
 func (c *StunConnection) Close() error {
+	if c == nil {
+		return nil
+	}
 	fmt.Println("[*] Shut it all down")
-	c.CntrClient.Close()
-	c.DataClient.Close()
+
 	return c.Conn.Close()
 }
 

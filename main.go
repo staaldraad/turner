@@ -131,7 +131,7 @@ func handleProxyTun(w http.ResponseWriter, r *http.Request) {
 
 	stunConnector, err := connectTurn(peer)
 	if err != nil {
-		//defer clientConn.Close()
+		fmt.Printf("[x] error setting up STUN %s\n", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		//clientConn.Write([]byte("Proxy encountered error"))
 		return
@@ -146,6 +146,7 @@ func handleProxyTun(w http.ResponseWriter, r *http.Request) {
 	clientConn, _, err := hijacker.Hijack()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
 	}
 
 	go transfer(stunConnector, clientConn)
@@ -183,24 +184,24 @@ func connectTurn(target string) (*turner.StunConnection, error) {
 	if clientErr != nil {
 		fmt.Println(clientErr)
 		c.Close()
-		return nil, err
+		return nil, clientErr
 	}
 	a, allocErr := client.AllocateTCP()
 	if allocErr != nil {
 		fmt.Println(allocErr)
 		client.Close()
-		return nil, err
+		return nil, allocErr
 	}
 	peerAddr, resolveErr := net.ResolveTCPAddr("tcp", target)
 	if resolveErr != nil {
 		client.Close()
-		return nil, err
+		return nil, resolveErr
 	}
 	fmt.Println("[*] Create peer permission")
 	permission, createErr := a.Create(peerAddr.IP)
 	if createErr != nil {
 		client.Close()
-		return nil, err
+		return nil, createErr
 	}
 	fmt.Println("[*] Create TCP Session Connection")
 	conn, err := permission.CreateTCP(peerAddr)
@@ -234,7 +235,7 @@ func connectTurn(target string) (*turner.StunConnection, error) {
 
 	if clientErr != nil {
 		client.Close()
-		return nil, err
+		return nil, clientErr
 	}
 
 	connD, err := permission.CreateTCP(peerAddr)
