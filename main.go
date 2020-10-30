@@ -81,6 +81,7 @@ func handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 	stunConnector, err := connectTurn(peer)
 	if err != nil {
+		fmt.Printf("[x] error setting up STUN %s\n", err)
 		http.Error(w, "Proxy encountered error", http.StatusInternalServerError)
 		return
 	}
