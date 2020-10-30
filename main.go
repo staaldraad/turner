@@ -230,7 +230,8 @@ func connectTurn(target string) (*turner.StunConnection, error) {
 	r := io.MultiReader(sideChanReader, cb)
 
 	clientb, clientErr := turnc.NewData(turnc.Options{
-		Conn: cb,
+		Conn:     cb,
+		Username: *username,
 	}, *sideChanWriter)
 
 	if clientErr != nil {
