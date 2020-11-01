@@ -23,14 +23,15 @@ var (
 		"turn server address",
 	)
 
-	username  = flag.String("u", "user", "username")
-	password  = flag.String("p", "secret", "password")
-	socksProx = flag.Bool("socks5", false, "Start a SOCKS5 server")
-	httpProx  = flag.Bool("http", false, "Start HTTP Proxy")
-	socksPort = flag.Int("sp", 8000, "Port to use for SOCKS server")
-	httpPort  = flag.Int("hp", 8080, "Port to use for HTTP Proxy")
-	socksHost = flag.String("sh", "127.0.0.1", "Host addr to listen on SOCKS5 (default 127.0.0.1)")
-	httpHost  = flag.String("hh", "127.0.0.1", "Host addr to listen on HTTP (default 127.0.0.1)")
+	username     = flag.String("u", "user", "username")
+	password     = flag.String("p", "secret", "password")
+	socksProx    = flag.Bool("socks5", false, "Start a SOCKS5 server")
+	httpProx     = flag.Bool("http", false, "Start HTTP Proxy")
+	socksPort    = flag.Int("sp", 8000, "Port to use for SOCKS server")
+	httpPort     = flag.Int("hp", 8080, "Port to use for HTTP Proxy")
+	socksHost    = flag.String("sh", "127.0.0.1", "Host addr to listen on SOCKS5 (default 127.0.0.1)")
+	httpHost     = flag.String("hh", "127.0.0.1", "Host addr to listen on HTTP (default 127.0.0.1)")
+	translateIPv = flag.Bool("translate", false, "Transalte IP family in target, for example IPv6. Allows connecting to turn server with one version (IPv4) and be relayed to a peer with other (IPv6)")
 )
 
 func copyHeader(dst, src http.Header) {
@@ -187,19 +188,41 @@ func connectTurn(target string) (*turner.StunConnection, error) {
 		c.Close()
 		return nil, clientErr
 	}
-	a, allocErr := client.AllocateTCP()
+	var alloc *turnc.Allocation
+	var allocErr error
+
+	// do address family selection
+	// this allows:
+	// IPv4 <-> turn-server <-> IPv6
+	// IPv6 <-> turn-server <-> IPv4
+	// hide this behind a flag for now, normal behaviour is to
+	// use the same address family ex: IPv4 <-> turn-server <-> IPv4
+	if *translateIPv {
+		// strip port
+		t := target[:strings.LastIndex(target, ":")]
+		// silly check, IPv4 or hostname should be dotted decimal notation
+		if strings.Count(t, ":") == 0 {
+			alloc, allocErr = client.AllocateTCP4()
+		} else { // ipv6 will have :
+			alloc, allocErr = client.AllocateTCP6()
+		}
+	} else {
+		alloc, allocErr = client.AllocateTCP()
+	}
+
 	if allocErr != nil {
 		fmt.Println(allocErr)
 		client.Close()
 		return nil, allocErr
 	}
+
 	peerAddr, resolveErr := net.ResolveTCPAddr("tcp", target)
 	if resolveErr != nil {
 		client.Close()
 		return nil, resolveErr
 	}
 	fmt.Println("[*] Create peer permission")
-	permission, createErr := a.Create(peerAddr.IP)
+	permission, createErr := alloc.Create(peerAddr.IP)
 	if createErr != nil {
 		client.Close()
 		return nil, createErr
@@ -248,7 +271,7 @@ func connectTurn(target string) (*turner.StunConnection, error) {
 
 	fmt.Println("[*] Bind client ")
 
-	_, err = clientb.ConnectionBind(turn.ConnectionID(binary.BigEndian.Uint32(connid.Value)), a, connD)
+	_, err = clientb.ConnectionBind(turn.ConnectionID(binary.BigEndian.Uint32(connid.Value)), alloc, connD)
 	if err != nil {
 		client.Close()
 		clientb.Close()
