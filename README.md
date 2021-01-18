@@ -16,8 +16,6 @@ go build
 
 ## Run
 
-_Disclaimer: Currently this is very much PoC, so things are a bit flaky, YMMV..._
-
 This assumes you already have a TURN server to connect to or are running your own. If you need to run your own checkout: [https://github.com/coturn/coturn/wiki/turnserver](https://github.com/coturn/coturn/wiki/turnserver)
 
 ```
@@ -30,7 +28,7 @@ You can also supply the username/password if the server requires these:
 ./turner -server turn.server:3478 -u username -p password -http
 ```
 
-The proxy listens on **127.0.0.1:8080** by default. 
+The HTTP proxy listens on **127.0.0.1:8080** by default. 
 
 Testing that the proxy works:
 
@@ -44,7 +42,7 @@ curl -x http://localhost:8080 http://ifconf.co/ip
 
 ### SOCKS5
 
-There is basic SOCKS5 support built-in. The SOCKS5 server can be toggled on via the `-socks5` argument.
+There is basic SOCKS5 support built-in. The SOCKS5 server can be toggled on via the `-socks5` argument. The proxy listens on port **127.0.0.1:8000** by default.
 
 ```
 ./turner -server turn.server:3478 -u username -p password -socks5
